@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nodes &amp; Edges</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <h1>Nodes &amp; Edges</h1>
+          <p>Sketching power, uncertainty, and response within a living court.</p>
+        </div>
+        <div class="kingdom-stats" id="kingdomStats"></div>
+      </header>
+
+      <main class="layout">
+        <section class="hierarchy-panel">
+          <div class="panel-heading">
+            <h2>Hierarchy</h2>
+            <p>Click anyone to inspect their dossier and log.</p>
+          </div>
+          <div id="hierarchyColumns" class="hierarchy-columns"></div>
+        </section>
+
+        <aside class="side-panel">
+          <section class="control-card">
+            <h3>Pulse Actions</h3>
+            <div class="button-stack">
+              <button id="eventButton" class="primary">Trigger Event</button>
+              <button id="discoverButton">Discover Trait</button>
+              <button id="scoutButton">Scout New Node</button>
+            </div>
+          </section>
+
+          <section class="control-card">
+            <h3>Rewire Hierarchy</h3>
+            <form id="rewireForm">
+              <label>
+                Move
+                <select id="rewireNode"></select>
+              </label>
+              <label>
+                Under
+                <select id="rewireParent"></select>
+              </label>
+              <button type="submit">Apply Change</button>
+            </form>
+          </section>
+
+          <section class="control-card event-feed">
+            <h3>Recent Events</h3>
+            <div id="eventFeed" class="event-list"></div>
+          </section>
+        </aside>
+      </main>
+
+      <section class="details-panel" id="detailsPanel">
+        <div class="panel-heading">
+          <h2>Selected Node</h2>
+          <p>Choose a node to see their known traits, uncertainties, and log.</p>
+        </div>
+        <div id="selectedNode"></div>
+      </section>
+    </div>
+
+    <script type="module" src="script.js"></script>
+  </body>
+</html>
