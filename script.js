@@ -1,5 +1,6 @@
 const dom = {
   hierarchyColumns: document.getElementById("hierarchyColumns"),
+  hierarchyPanel: document.querySelector(".hierarchy-panel"),
   eventFeed: document.getElementById("eventFeed"),
   selectedNode: document.getElementById("selectedNode"),
   kingdomStats: document.getElementById("kingdomStats"),
@@ -10,6 +11,13 @@ const dom = {
   rewireForm: document.getElementById("rewireForm"),
   rewireNode: document.getElementById("rewireNode"),
   rewireParent: document.getElementById("rewireParent"),
+  connectionForm: document.getElementById("connectionForm"),
+  connectionSource: document.getElementById("connectionSource"),
+  connectionTarget: document.getElementById("connectionTarget"),
+  connectionType: document.getElementById("connectionType"),
+  connectionSecrecy: document.getElementById("connectionSecrecy"),
+  connectionStatusHint: document.getElementById("connectionStatusHint"),
+  connectionList: document.getElementById("connectionList"),
 };
 
 const state = {
@@ -17,6 +25,9 @@ const state = {
   selectedNodeId: null,
   eventFeed: [],
   scoutCounter: 0,
+  connections: new Map(),
+  turn: 1,
+  connectionsUsedThisTurn: 0,
 };
 
 const BASE_NODES = [
@@ -283,6 +294,34 @@ const EVENTS = [
   },
 ];
 
+const CONNECTION_TYPES = [
+  {
+    id: "oath",
+    label: "Oathbond",
+    description: "Mutual duty reinforced under the Crown.",
+    color: "#f6c177",
+    unlockHint: "Pairs of oathbonds can expose buried loyalties.",
+  },
+  {
+    id: "leverage",
+    label: "Leverage Chain",
+    description: "Favours, debts, and political leverage.",
+    color: "#a5b4ff",
+    unlockHint: "Secret leverage creates influence surges.",
+  },
+  {
+    id: "whisper",
+    label: "Whisper Thread",
+    description: "Shared informants and rumor trades.",
+    color: "#9ef0d8",
+    unlockHint: "Three whisper threads may trigger intel boons.",
+  },
+];
+
+const CONNECTION_TYPE_MAP = new Map(CONNECTION_TYPES.map((type) => [type.id, type]));
+const MAX_CONNECTIONS_PER_TURN = 1;
+let overlayAgent = null;
+
 const NAME_PARTS = {
   first: ["Iria", "Balen", "Corvus", "Neris", "Thane", "Sera", "Orrin", "Vela"],
   second: ["Vale", "Kerr", "Nyx", "Dawn", "Kestrel", "Rune", "Marrow", "Sol"],
@@ -312,6 +351,8 @@ function init() {
   });
   state.selectedNodeId = "aster";
   wireControls();
+  overlayAgent = new ConnectionOverlayAgent(dom.hierarchyPanel);
+  overlayAgent.init();
   renderAll();
 }
 
@@ -326,14 +367,18 @@ function wireControls() {
   dom.rewireNode.addEventListener("change", () => {
     populateParentOptions(dom.rewireNode.value);
   });
+  dom.connectionForm.addEventListener("submit", handleConnectionSubmit);
 }
 
 function renderAll() {
   renderHierarchy();
+  syncOverlayAgent();
   renderSelected();
   renderEventFeed();
   renderStats();
   renderRewireOptions();
+  renderConnectionControls();
+  renderConnectionLedger();
 }
 
 function renderHierarchy() {
@@ -355,6 +400,7 @@ function renderHierarchy() {
     nodes.forEach((node) => {
       const card = document.createElement("article");
       card.className = "node-card";
+      card.dataset.nodeId = node.id;
       if (node.id === state.selectedNodeId) card.classList.add("selected");
       card.innerHTML = `
         <header>
@@ -376,6 +422,11 @@ function renderHierarchy() {
     });
     dom.hierarchyColumns.appendChild(tierEl);
   });
+}
+
+function syncOverlayAgent() {
+  if (!overlayAgent) return;
+  overlayAgent.update([...state.connections.values()]);
 }
 
 function renderSelected() {
@@ -460,11 +511,14 @@ function renderStats() {
       Math.max(1, influences.slice(0, 4).length)
   );
   const mystery = 100 - insight;
+  const bondTokens = Math.max(0, MAX_CONNECTIONS_PER_TURN - state.connectionsUsedThisTurn);
   dom.kingdomStats.innerHTML = `
+    <div class="stat-chip">Turn ${state.turn}</div>
     <div class="stat-chip">Stability ${stability}</div>
     <div class="stat-chip">Insight ${insight}%</div>
     <div class="stat-chip">Mystery ${mystery}%</div>
     <div class="stat-chip">Nodes ${state.nodes.size}</div>
+    <div class="stat-chip">Bond ${bondTokens}/${MAX_CONNECTIONS_PER_TURN}</div>
   `;
 }
 
@@ -525,6 +579,215 @@ function handleRewire() {
   renderAll();
 }
 
+function renderConnectionControls() {
+  if (!dom.connectionSource || !dom.connectionTarget || !dom.connectionType) return;
+  const nodes = [...state.nodes.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const previousSource = dom.connectionSource.value;
+  const previousTarget = dom.connectionTarget.value;
+  const previousType = dom.connectionType.value || "";
+  const options = nodes
+    .map((node) => `<option value="${node.id}">${node.name}</option>`)
+    .join("");
+  dom.connectionSource.innerHTML = `<option value="">Select source</option>${options}`;
+  dom.connectionTarget.innerHTML = `<option value="">Select target</option>${options}`;
+  if (nodes.some((node) => node.id === previousSource)) {
+    dom.connectionSource.value = previousSource;
+  }
+  if (nodes.some((node) => node.id === previousTarget)) {
+    dom.connectionTarget.value = previousTarget;
+  }
+  const selectedType = CONNECTION_TYPES.some((type) => type.id === previousType)
+    ? previousType
+    : CONNECTION_TYPES[0]?.id ?? "";
+  dom.connectionType.innerHTML = CONNECTION_TYPES.map(
+    (type) => `<option value="${type.id}" ${type.id === selectedType ? "selected" : ""}>${type.label}</option>`
+  ).join("");
+  if (!CONNECTION_TYPES.find((type) => type.id === dom.connectionType.value) && CONNECTION_TYPES[0]) {
+    dom.connectionType.value = CONNECTION_TYPES[0].id;
+  }
+  updateConnectionStatusHint();
+}
+
+function renderConnectionLedger() {
+  if (!dom.connectionList) return;
+  if (state.connections.size === 0) {
+    dom.connectionList.innerHTML =
+      '<p class="empty-state">No personal bonds have been recorded yet.</p>';
+    return;
+  }
+  const entries = [...state.connections.values()]
+    .sort((a, b) => b.createdTurn - a.createdTurn)
+    .map((connection) => {
+      const source = state.nodes.get(connection.sourceId);
+      const target = state.nodes.get(connection.targetId);
+      const type = CONNECTION_TYPE_MAP.get(connection.type);
+      const unlocks =
+        connection.unlocks && connection.unlocks.length > 0
+          ? connection.unlocks.map((note) => `<div class="unlock-note">${note}</div>`).join("")
+          : type?.unlockHint
+          ? `<div class="unlock-note">${type.unlockHint}</div>`
+          : "";
+      return `
+        <article class="connection-chip">
+          <header>
+            <span>${source?.name ?? "Unknown"} ↔ ${target?.name ?? "Unknown"}</span>
+            <span>${type?.label ?? connection.type}</span>
+          </header>
+          <div class="meta">
+            <span>${connection.secrecy === "secret" ? "Secret Compact" : "Public Ledger"}</span>
+            <span>Intensity ${connection.intensity}</span>
+            <span>Turn ${connection.createdTurn}</span>
+          </div>
+          <p>${type?.description ?? ""}</p>
+          ${unlocks}
+        </article>
+      `;
+    })
+    .join("");
+  dom.connectionList.innerHTML = entries;
+}
+
+function updateConnectionStatusHint() {
+  if (!dom.connectionStatusHint) return;
+  const remaining = Math.max(0, MAX_CONNECTIONS_PER_TURN - state.connectionsUsedThisTurn);
+  dom.connectionStatusHint.textContent =
+    remaining > 0
+      ? `Bond token ready: ${remaining} of ${MAX_CONNECTIONS_PER_TURN} available this turn.`
+      : "Bond token spent. Advance the turn to unlock another forging.";
+}
+
+function handleConnectionSubmit(event) {
+  event.preventDefault();
+  if (!canForgeConnection()) {
+    alert("Bond token spent. Resolve another turn action to refresh it.");
+    return;
+  }
+  const sourceId = dom.connectionSource.value;
+  const targetId = dom.connectionTarget.value;
+  const typeId = dom.connectionType.value || CONNECTION_TYPES[0]?.id;
+  const secrecy = dom.connectionSecrecy.value;
+  if (!sourceId || !targetId) {
+    alert("Select both source and target nodes.");
+    return;
+  }
+  if (sourceId === targetId) {
+    alert("A node cannot bind to itself.");
+    return;
+  }
+  if (connectionExists(sourceId, targetId)) {
+    alert("Those nodes already have a recorded bond.");
+    return;
+  }
+  forgeConnection({ sourceId, targetId, typeId, secrecy });
+  renderAll();
+}
+
+function canForgeConnection() {
+  return state.connectionsUsedThisTurn < MAX_CONNECTIONS_PER_TURN;
+}
+
+function connectionExists(sourceId, targetId) {
+  for (const connection of state.connections.values()) {
+    const matchesDirect =
+      (connection.sourceId === sourceId && connection.targetId === targetId) ||
+      (connection.sourceId === targetId && connection.targetId === sourceId);
+    if (matchesDirect) return true;
+  }
+  return false;
+}
+
+function forgeConnection({ sourceId, targetId, typeId, secrecy }) {
+  const source = state.nodes.get(sourceId);
+  const target = state.nodes.get(targetId);
+  if (!source || !target) {
+    alert("One of the selected nodes no longer exists.");
+    return null;
+  }
+  const type = CONNECTION_TYPE_MAP.get(typeId) ?? CONNECTION_TYPES[0];
+  const connection = {
+    id: `conn-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    sourceId,
+    targetId,
+    type: type?.id ?? typeId,
+    secrecy,
+    intensity: randomRange(40, 80),
+    createdTurn: state.turn,
+    unlocks: [],
+  };
+  state.connections.set(connection.id, connection);
+  state.connectionsUsedThisTurn += 1;
+  pushEvent(
+    `${type?.label ?? "Bond"} forged between ${source.name} and ${target.name}.`
+  );
+  addLog(
+    sourceId,
+    `Forged a ${type?.label ?? "connection"} with ${target.name} (${secrecy}).`
+  );
+  addLog(
+    targetId,
+    `Forged a ${type?.label ?? "connection"} with ${source.name} (${secrecy}).`
+  );
+  evaluateConnectionUnlocks(connection);
+  updateConnectionStatusHint();
+  return connection;
+}
+
+function getConnectionsForNode(nodeId) {
+  return [...state.connections.values()].filter(
+    (connection) =>
+      connection.sourceId === nodeId || connection.targetId === nodeId
+  );
+}
+
+function evaluateConnectionUnlocks(connection) {
+  const impactedNodes = [connection.sourceId, connection.targetId];
+  impactedNodes.forEach((nodeId) => {
+    const node = state.nodes.get(nodeId);
+    if (!node) return;
+    const personalConnections = getConnectionsForNode(nodeId);
+    const typeCounts = personalConnections.reduce((acc, conn) => {
+      acc[conn.type] = (acc[conn.type] || 0) + 1;
+      return acc;
+    }, {});
+    if ((typeCounts.oath ?? 0) >= 2) {
+      if (revealTraitForNode(nodeId, "Oath web exposes a buried truth")) {
+        connection.unlocks.push(`${node.name} reveals a buried truth.`);
+      }
+    }
+    if ((typeCounts.whisper ?? 0) >= 3) {
+      addLog(nodeId, "Whisper network feeds strategic foresight.");
+      adjustInfluence(nodeId, 4);
+      connection.unlocks.push(`${node.name} gains foresight from whispers.`);
+    }
+    const secretLinks = personalConnections.filter(
+      (conn) => conn.secrecy === "secret"
+    ).length;
+    if (secretLinks >= 2) {
+      addLog(nodeId, "Secret compacts strain loyalties; influence dips.");
+      adjustInfluence(nodeId, -2);
+    }
+  });
+}
+
+function revealTraitForNode(nodeId, reason) {
+  const node = state.nodes.get(nodeId);
+  if (!node) return false;
+  const hidden = node.attributes.filter((attr) => !attr.known);
+  if (hidden.length === 0) return false;
+  const attr = randomItem(hidden);
+  attr.known = true;
+  addLog(nodeId, `${reason}: ${attr.name} — ${attr.value}.`);
+  pushEvent(`${node.name}'s ${attr.name} surfaces through new bonds.`);
+  return true;
+}
+
+function advanceTurn(note) {
+  state.turn += 1;
+  state.connectionsUsedThisTurn = 0;
+  state.lastTurnNote = note;
+  updateConnectionStatusHint();
+}
+
 function triggerEvent() {
   const event = randomItem(EVENTS);
   if (!event) return;
@@ -535,15 +798,17 @@ function triggerEvent() {
   if (Math.random() < (outcome.discoveryChance ?? 0)) {
     revealRandomTrait();
   }
+  advanceTurn("Event resolved");
   renderAll();
 }
 
 function discoverTrait() {
-  if (!revealRandomTrait()) {
+  const revealed = revealRandomTrait();
+  if (!revealed) {
     pushEvent("All known figures stand exposed; no mysteries left to uncover.");
-  } else {
-    renderAll();
   }
+  advanceTurn("Insight focus spent");
+  renderAll();
 }
 
 function scoutNewNode() {
@@ -584,6 +849,7 @@ function scoutNewNode() {
   state.nodes.set(node.id, node);
   state.selectedNodeId = node.id;
   pushEvent(`A new figure emerges: ${node.name}, the ${node.role}.`);
+  advanceTurn("New envoy scouted");
   renderAll();
 }
 
@@ -686,6 +952,79 @@ function getDescendants(nodeId) {
     }
   });
   return descendants;
+}
+
+class ConnectionOverlayAgent {
+  constructor(hostElement) {
+    this.host = hostElement;
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "connection-overlay";
+    this.ctx = this.canvas.getContext("2d");
+    this.connections = [];
+    this.frame = null;
+    this.handleResize = this.requestDraw.bind(this);
+  }
+
+  init() {
+    if (!this.host) return;
+    this.host.appendChild(this.canvas);
+    window.addEventListener("resize", this.handleResize);
+    this.requestDraw();
+  }
+
+  update(connections) {
+    this.connections = connections;
+    this.requestDraw();
+  }
+
+  requestDraw() {
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = requestAnimationFrame(() => this.draw());
+  }
+
+  resizeCanvas() {
+    if (!this.host) return;
+    const rect = this.host.getBoundingClientRect();
+    this.canvas.width = rect.width;
+    this.canvas.height = rect.height;
+    this.canvas.style.width = `${rect.width}px`;
+    this.canvas.style.height = `${rect.height}px`;
+  }
+
+  draw() {
+    if (!this.host) return;
+    this.resizeCanvas();
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.connections.forEach((connection) => {
+      const startEl = this.host.querySelector(`[data-node-id="${connection.sourceId}"]`);
+      const endEl = this.host.querySelector(`[data-node-id="${connection.targetId}"]`);
+      if (!startEl || !endEl) return;
+      const start = this.getCenter(startEl);
+      const end = this.getCenter(endEl);
+      const type = CONNECTION_TYPE_MAP.get(connection.type);
+      const color = type?.color ?? "#ffffff";
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = connection.secrecy === "secret" ? 0.9 : 0.6;
+      ctx.lineWidth = connection.secrecy === "secret" ? 2.4 : 1.6;
+      ctx.beginPath();
+      const midX = (start.x + end.x) / 2;
+      const curvature = connection.secrecy === "secret" ? 60 : 40;
+      ctx.moveTo(start.x, start.y);
+      ctx.bezierCurveTo(midX, start.y - curvature, midX, end.y + curvature, end.x, end.y);
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  getCenter(element) {
+    const hostRect = this.host.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    return {
+      x: rect.left - hostRect.left + rect.width / 2,
+      y: rect.top - hostRect.top + rect.height / 2,
+    };
+  }
 }
 
 init();

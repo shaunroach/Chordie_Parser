@@ -36,6 +36,33 @@
           </section>
 
           <section class="control-card">
+            <h3>Forge Connection</h3>
+            <p class="muted-text" id="connectionStatusHint"></p>
+            <form id="connectionForm" class="connection-form">
+              <label>
+                Source
+                <select id="connectionSource"></select>
+              </label>
+              <label>
+                Target
+                <select id="connectionTarget"></select>
+              </label>
+              <label>
+                Bond Type
+                <select id="connectionType"></select>
+              </label>
+              <label>
+                Visibility
+                <select id="connectionSecrecy">
+                  <option value="public">Public Ledger</option>
+                  <option value="secret">Secret Compact</option>
+                </select>
+              </label>
+              <button type="submit">Forge Bond</button>
+            </form>
+          </section>
+
+          <section class="control-card">
             <h3>Rewire Hierarchy</h3>
             <form id="rewireForm">
               <label>
@@ -53,6 +80,11 @@
           <section class="control-card event-feed">
             <h3>Recent Events</h3>
             <div id="eventFeed" class="event-list"></div>
+          </section>
+
+          <section class="control-card connection-ledger">
+            <h3>Connection Ledger</h3>
+            <div id="connectionList" class="connection-list"></div>
           </section>
         </aside>
       </main>
